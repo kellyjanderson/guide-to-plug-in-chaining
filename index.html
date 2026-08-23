@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Guide to Plug-In Chaining</title>
+  <meta name="description" content="A practical guide to avoiding common problems when chaining dynamic multi-frequency audio plug-ins." />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="shell hero">
+    <nav>
+      <strong>Guide to Plug-In Chaining</strong>
+      <div class="navlinks">
+        <a href="#issues">Common issues</a>
+        <a href="#avoid">How to avoid them</a>
+        <a href="#visuals">Visualizations</a>
+        <a href="#chains">Safer chains</a>
+        <a href="#checklist">Checklist</a>
+      </div>
+    </nav>
+
+    <div class="hero-grid">
+      <div>
+        <p class="eyebrow">Dynamic multi-frequency processing</p>
+        <h1>How to chain spectral and dynamic plug-ins without creating new problems</h1>
+        <p class="lede">Spectral denoisers, dynamic EQ, multiband compressors, de-essers, and related processors can interact in ways that are not obvious when each plug-in is auditioned alone. This guide focuses on the avoidable chain-level failures and the design habits that prevent them.</p>
+        <div class="callouts">
+          <div><b>Main idea:</b> every stage changes what the next stage thinks it hears.</div>
+          <div><b>Best defense:</b> give each stage a distinct job and keep overlap small.</div>
+        </div>
+      </div>
+      <img class="hero-art" src="assets/hero.svg" alt="Technical illustration of an audio signal passing through multiple frequency-selective processors." />
+    </div>
+  </header>
+
+  <main class="shell">
+    <section>
+      <p class="eyebrow">Why chains fail</p>
+      <h2>The chain is part of the processor</h2>
+      <div class="two-col">
+        <article class="card"><h3>Detector interaction</h3><p>A dynamic processor does more than alter the audible signal. It changes the energy distribution, transients, noise floor, and spectral balance seen by the next detector.</p></article>
+        <article class="card"><h3>Cumulative behavior</h3><p>Three individually mild processors can produce severe combined attenuation, unstable gain envelopes, smeared timing, or repeated analysis of artifacts created upstream.</p></article>
+      </div>
+    </section>
+
+    <section id="issues">
+      <p class="eyebrow">Failure modes</p>
+      <h2>Common avoidable issues</h2>
+      <div class="issues-layout">
+        <div id="issueButtons" class="issue-buttons"></div>
+        <article id="issueDetail" class="card issue-detail" aria-live="polite"></article>
+      </div>
+    </section>
+
+    <section id="avoid">
+      <p class="eyebrow">Prevention patterns</p>
+      <h2>Design the chain so the processors cooperate</h2>
+      <div class="grid3">
+        <article class="card"><h3>Assign one job per stage</h3><p>Do not let three processors all perform general cleanup. Separate impulsive events, broadband noise, tonal residue, sibilance, and macro-dynamics.</p></article>
+        <article class="card"><h3>Reduce overlapping authority</h3><p>If two processors work the same frequencies for the same reason, that overlap should be deliberate and conservative.</p></article>
+        <article class="card"><h3>Coordinate time behavior</h3><p>FFT window, lookahead, attack, release, and gate recovery should make sense together rather than being independently optimized in isolation.</p></article>
+        <article class="card"><h3>Keep later stages weaker</h3><p>Early specialist stages may work harder. Later stages should usually make smaller corrective moves because the signal has already been shaped.</p></article>
+        <article class="card"><h3>Level-match between stages</h3><p>Avoid feeding a boosted or spectrally skewed signal into a downstream detector unless that change is intentional.</p></article>
+        <article class="card"><h3>Avoid mask chasing</h3><p>Repeated denoise → reconstruct → reanalyze cycles can cause downstream processors to learn upstream artifacts as though they were the original noise.</p></article>
+      </div>
+    </section>
+
+    <section id="visuals">
+      <p class="eyebrow">Interactive technical illustrations</p>
+      <h2>See the interactions rather than guessing</h2>
+
+      <article class="card viz">
+        <div class="viz-head">
+          <div><h3>FFT window tradeoff</h3><p>Longer windows improve frequency specificity but reduce temporal precision. Bigger is not automatically better.</p></div>
+          <label>Window <strong><span id="fftValue">20</span> ms</strong></label>
+        </div>
+        <input id="fftSlider" type="range" min="5" max="120" value="20" />
+        <div class="viz-grid">
+          <svg id="fftSvg" viewBox="0 0 700 300"></svg>
+          <div class="metrics">
+            <p><span>Transient tracking</span><b id="transientScore"></b></p>
+            <p><span>Frequency specificity</span><b id="frequencyScore"></b></p>
+            <p><span>Best use</span><b id="bestFit"></b></p>
+            <div id="fftNarrative"></div>
+          </div>
+        </div>
+      </article>
+
+      <article class="card viz">
+        <h3>Cumulative attenuation</h3>
+        <p>Serial reductions add in dB. Several small cuts can become a large one.</p>
+        <div class="sliders3">
+          <label>Stage 1 <input id="db1" type="range" min="0" max="12" step="0.5" value="3"></label>
+          <label>Stage 2 <input id="db2" type="range" min="0" max="12" step="0.5" value="4"></label>
+          <label>Stage 3 <input id="db3" type="range" min="0" max="12" step="0.5" value="2"></label>
+        </div>
+        <div class="readouts"><b id="dbTotal"></b><b id="ampTotal"></b></div>
+        <svg id="attenSvg" viewBox="0 0 760 190"></svg>
+      </article>
+
+      <article class="card viz">
+        <h3>Release-time interaction</h3>
+        <p>Mismatched recovery times can create background breathing, flutter, or what we have been calling <em>envelope uulation</em>.</p>
+        <div class="sliders3">
+          <label>Stage 1 <input id="rel1" type="range" min="20" max="700" step="10" value="60"></label>
+          <label>Stage 2 <input id="rel2" type="range" min="20" max="700" step="10" value="180"></label>
+          <label>Stage 3 <input id="rel3" type="range" min="20" max="700" step="10" value="420"></label>
+        </div>
+        <p id="releaseSummary" class="summary"></p>
+        <svg id="releaseSvg" viewBox="0 0 760 250"></svg>
+      </article>
+    </section>
+
+    <section id="chains">
+      <p class="eyebrow">Architecture</p>
+      <h2>Bad and better chain patterns</h2>
+      <div class="mode-buttons">
+        <button class="active" data-mode="bad">Overlapping general cleanup</button>
+        <button data-mode="good">Specialized chain</button>
+        <button data-mode="analysis">Multi-resolution analysis</button>
+      </div>
+      <div class="two-col">
+        <article class="card"><svg id="chainSvg" viewBox="0 0 920 340"></svg></article>
+        <article id="chainText" class="card"></article>
+      </div>
+
+      <div class="grid3 recipes">
+        <article class="card"><h3>Speech cleanup</h3><ol><li>Short-event cleanup</li><li>Main denoise</li><li>Residual tonal cleanup</li><li>Dynamic EQ / de-esser</li><li>Gentle broadband control</li></ol></article>
+        <article class="card"><h3>RX Spectral De-noise</h3><ul><li>Use the same FFT-time when multiple instances are doing the same class of work.</li><li>Use different FFT-times only when the stages are deliberately specialized.</li><li>Relearn the noise profile after changing FFT-time.</li></ul></article>
+        <article class="card"><h3>Multiband + dynamic EQ</h3><ul><li>Use multiband compression for broad macro-control.</li><li>Use dynamic EQ for targeted exceptions.</li><li>Avoid duplicating control at crossover boundaries.</li></ul></article>
+      </div>
+    </section>
+
+    <section id="checklist">
+      <p class="eyebrow">Quick audit</p>
+      <h2>Before you blame the plug-in</h2>
+      <article class="card checklist">
+        <label><input type="checkbox"> Does each stage have a clearly different job?</label>
+        <label><input type="checkbox"> Are several stages cutting the same region for the same reason?</label>
+        <label><input type="checkbox"> Are attack, release, recovery, or FFT windows wildly mismatched?</label>
+        <label><input type="checkbox"> Are you using a longer FFT only because it feels more advanced?</label>
+        <label><input type="checkbox"> Did you level-match between stages?</label>
+        <label><input type="checkbox"> Did a later stage learn earlier artifacts as noise?</label>
+        <label><input type="checkbox"> Are crossover regions and dynamic EQ nodes fighting?</label>
+        <label><input type="checkbox"> Is the chain solving distinct problems, or just stacking “cleanup” repeatedly?</label>
+      </article>
+    </section>
+  </main>
+
+  <footer class="shell">A living guide to safer plug-in chaining. Technical diagrams are rendered in SVG/JavaScript so they remain editable and accurate.</footer>
+  <script src="script.js"></script>
+</body>
+</html>
