@@ -1,0 +1,203 @@
+desc:Layer Mode Combiner (Guide to Plug-In Chaining)
+// Audio-domain layer-mode combiner for aligned stereo branches.
+// Route up to 8 stereo branches to channels 1/2, 3/4, ... 15/16 on one track.
+//
+// SAFETY / INTERPRETATION:
+//   Mean, Median, Trimmed Mean, Min/Max Magnitude, Difference and consensus modes
+//   are analysis-oriented. Photo-derived nonlinear modes (Multiply, Screen, Overlay,
+//   Hard Light, Soft Light, Exclusion) intentionally reshape the waveform and can
+//   generate harmonics. They are creative/comparative modes, not forensic-neutral.
+//
+// All branch inputs are assumed sample/time aligned first.
+
+slider1:3<2,8,1>Active stereo branches
+slider2:2<0,16,1{Mean,Add,Median,Trimmed mean,Difference,Subtract 1-rest,Min magnitude,Max magnitude,Lighten,Darken,Multiply,Screen,Overlay,Hard light,Soft light,Exclusion,Consensus}>Mode
+slider3:0.5<0,1,0.01>Mix / strength
+slider4:0.5<0,1,0.01>Consensus threshold
+slider5:1<0,2,1{No normalization,Divide by active branches,Auto peak guard}>Output normalization
+slider6:0<0,1,1{Signed samples,Magnitude-aware}>Comparison basis
+
+in_pin:Branch 1 L
+in_pin:Branch 1 R
+in_pin:Branch 2 L
+in_pin:Branch 2 R
+in_pin:Branch 3 L
+in_pin:Branch 3 R
+in_pin:Branch 4 L
+in_pin:Branch 4 R
+in_pin:Branch 5 L
+in_pin:Branch 5 R
+in_pin:Branch 6 L
+in_pin:Branch 6 R
+in_pin:Branch 7 L
+in_pin:Branch 7 R
+in_pin:Branch 8 L
+in_pin:Branch 8 R
+out_pin:Output L
+out_pin:Output R
+
+@init
+MAXN=8;
+
+function sort8(n) local(i,j,tmp) (
+  i=0;
+  loop(n,
+    j=i+1;
+    loop(n-i-1,
+      arr[j] < arr[i] ? (tmp=arr[i]; arr[i]=arr[j]; arr[j]=tmp;);
+      j+=1;
+    );
+    i+=1;
+  );
+);
+
+function getL(i) (
+  i==0 ? spl0 : i==1 ? spl2 : i==2 ? spl4 : i==3 ? spl6 : i==4 ? spl8 : i==5 ? spl10 : i==6 ? spl12 : spl14;
+);
+function getR(i) (
+  i==0 ? spl1 : i==1 ? spl3 : i==2 ? spl5 : i==3 ? spl7 : i==4 ? spl9 : i==5 ? spl11 : i==6 ? spl13 : spl15;
+);
+
+function photo01(x) ( max(0,min(1,(x+1)*0.5)); );
+function audio11(x) ( max(-1,min(1,x*2-1)); );
+function overlay01(a,b) ( a<0.5 ? 2*a*b : 1-2*(1-a)*(1-b); );
+function softlight01(a,b) local(d) (
+  b<0.5 ? a-(1-2*b)*a*(1-a) : (
+    d = a<=0.25 ? ((16*a-12)*a+4)*a : sqrt(a);
+    a+(2*b-1)*(d-a)
+  );
+);
+
+function combine(chan) local(n,i,x,sum,base,out,a,b,t,lo,hi,count,thr,agree,signsum,absx,mn,mx,den) (
+  n=max(2,min(MAXN,floor(slider1+0.5)));
+
+  // load selected channel into arr[]
+  i=0;
+  loop(n,
+    arr[i]=chan==0 ? getL(i) : getR(i);
+    i+=1;
+  );
+
+  base=arr[0];
+  sum=0; i=0;
+  loop(n, sum+=arr[i]; i+=1; );
+
+  mode=floor(slider2+0.5);
+
+  mode==0 ? out=sum/n; // Mean
+  mode==1 ? out=sum;   // Add
+  mode==2 ? (          // Median
+    sort8(n);
+    out = n%2 ? arr[floor(n/2)] : (arr[n/2-1]+arr[n/2])*0.5;
+  );
+  mode==3 ? (          // Trimmed mean: drop one low + one high when possible
+    sort8(n);
+    n>2 ? (
+      sum=0; i=1; loop(n-2,sum+=arr[i];i+=1;); out=sum/(n-2);
+    ) : out=(arr[0]+arr[1])*0.5;
+  );
+  mode==4 ? (          // Difference from branch 1 vs mean of rest
+    sum=0; i=1; loop(n-1,sum+=arr[i];i+=1;);
+    out=base-sum/(n-1);
+  );
+  mode==5 ? (          // Subtract rest from branch 1
+    sum=0; i=1; loop(n-1,sum+=arr[i];i+=1;);
+    out=base-sum;
+  );
+  mode==6 ? (          // Minimum magnitude or signed minimum
+    out=arr[0]; i=1;
+    loop(n-1,
+      slider6>0.5 ? (abs(arr[i])<abs(out) ? out=arr[i];) : (arr[i]<out ? out=arr[i];);
+      i+=1;
+    );
+  );
+  mode==7 ? (          // Maximum magnitude or signed maximum
+    out=arr[0]; i=1;
+    loop(n-1,
+      slider6>0.5 ? (abs(arr[i])>abs(out) ? out=arr[i];) : (arr[i]>out ? out=arr[i];);
+      i+=1;
+    );
+  );
+  mode==8 ? (          // Lighten - pairwise photo-style max
+    out=arr[0]; i=1;
+    loop(n-1,
+      slider6>0.5 ? (abs(arr[i])>abs(out) ? out=arr[i];) : (arr[i]>out ? out=arr[i];);
+      i+=1;
+    );
+  );
+  mode==9 ? (          // Darken - pairwise photo-style min
+    out=arr[0]; i=1;
+    loop(n-1,
+      slider6>0.5 ? (abs(arr[i])<abs(out) ? out=arr[i];) : (arr[i]<out ? out=arr[i];);
+      i+=1;
+    );
+  );
+  mode==10 ? (         // Multiply in remapped [0,1]
+    a=photo01(arr[0]); i=1;
+    loop(n-1,a*=photo01(arr[i]);i+=1;);
+    out=audio11(a);
+  );
+  mode==11 ? (         // Screen
+    a=photo01(arr[0]); i=1;
+    loop(n-1,a=1-(1-a)*(1-photo01(arr[i]));i+=1;);
+    out=audio11(a);
+  );
+  mode==12 ? (         // Overlay: branch 1 is base
+    a=photo01(arr[0]); i=1;
+    loop(n-1,a=overlay01(a,photo01(arr[i]));i+=1;);
+    out=audio11(a);
+  );
+  mode==13 ? (         // Hard light: each next branch controls blend
+    a=photo01(arr[0]); i=1;
+    loop(n-1,b=photo01(arr[i]); a=overlay01(b,a); i+=1;);
+    out=audio11(a);
+  );
+  mode==14 ? (         // Soft light
+    a=photo01(arr[0]); i=1;
+    loop(n-1,b=photo01(arr[i]); a=softlight01(a,b); i+=1;);
+    out=audio11(a);
+  );
+  mode==15 ? (         // Exclusion
+    a=photo01(arr[0]); i=1;
+    loop(n-1,b=photo01(arr[i]); a=a+b-2*a*b; i+=1;);
+    out=audio11(a);
+  );
+  mode==16 ? (         // Consensus: median-like sign/magnitude agreement gate
+    thr=max(0,min(1,slider4));
+    signsum=0; sum=0; count=0; i=0;
+    loop(n,
+      x=arr[i];
+      absx=abs(x);
+      absx>1e-12 ? (
+        signsum += x>=0 ? 1 : -1;
+        sum += x;
+        count += 1;
+      );
+      i+=1;
+    );
+    agree = count>0 ? abs(signsum)/count : 0;
+    agree>=thr ? (
+      // return median of active sample values once sign consensus is adequate
+      sort8(n);
+      out=n%2 ? arr[floor(n/2)] : (arr[n/2-1]+arr[n/2])*0.5;
+    ) : out=0;
+  );
+
+  // Strength behaves like layer opacity against branch 1.
+  out = base*(1-slider3) + out*slider3;
+
+  norm=floor(slider5+0.5);
+  norm==1 && mode==1 ? out/=n;
+  norm==2 ? (
+    abs(out)>1 ? out/=abs(out);
+  );
+  out;
+);
+
+@sample
+outL=combine(0);
+outR=combine(1);
+spl0=outL;
+spl1=outR;
+// Keep output only on channels 1/2; clear higher channels so downstream FX do not see branches.
+spl2=spl3=spl4=spl5=spl6=spl7=spl8=spl9=spl10=spl11=spl12=spl13=spl14=spl15=0;
