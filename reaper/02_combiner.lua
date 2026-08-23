@@ -1,7 +1,7 @@
 -- Guide to Plug-In Chaining: Automatic Aligned Layer-Mode Combiner
 --
 -- USER WORKFLOW
---   1. Select 3-8 source tracks containing independently processed copies of the same audio.
+--   1. Select 2-8 source tracks containing independently processed copies of the same audio.
 --   2. Run this script.
 --   3. Choose a combine mode and strength.
 --   4. The script:
@@ -19,7 +19,10 @@
 --   * The earliest audio item on each selected source track is used as that track's alignment
 --     anchor. This matches the intended workflow of independently processed copies of the same
 --     source. More general multi-item initial alignment can be added later.
---   * The JSFX engine supports up to 8 stereo branches.
+--   * The JSFX engine supports 2-8 stereo branches.
+--   * Most blend modes are valid with two tracks. Modes whose statistical meaning improves
+--     with 3+ branches (for example Median, Trimmed Mean, Consensus) are still permitted with
+--     two inputs, using their defined two-input behavior.
 --   * Photo-derived nonlinear modes are creative operators and are not forensic-neutral.
 --
 -- Requires these files beside this script:
@@ -261,8 +264,8 @@ local function render_bus(bus, mode)
 end
 
 local sourceTracks=selected_tracks()
-if #sourceTracks < 3 then
-  reaper.MB("Select at least 3 source tracks. The topmost selected track is the alignment reference.","Aligned Layer-Mode Combiner",0)
+if #sourceTracks < 2 then
+  reaper.MB("Select at least 2 source tracks. The topmost selected track is the alignment reference.","Aligned Layer-Mode Combiner",0)
   return
 end
 if #sourceTracks > MAX_BRANCHES then
