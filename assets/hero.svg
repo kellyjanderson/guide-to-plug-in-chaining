@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" role="img" aria-labelledby="t d">
+<title id="t">Plugin chain interaction diagram</title><desc id="d">A waveform enters several frequency-selective processors, with overlapping detector regions and a final output.</desc>
+<defs>
+  <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0d1c2d"/><stop offset="1" stop-color="#102943"/></linearGradient>
+  <linearGradient id="sig" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#72f0d3"/><stop offset="1" stop-color="#6bc0ff"/></linearGradient>
+</defs>
+<rect width="900" height="560" rx="28" fill="url(#bg)"/>
+<g opacity=".18" stroke="#fff"><path d="M0 80H900M0 160H900M0 240H900M0 320H900M0 400H900M0 480H900"/><path d="M100 0V560M200 0V560M300 0V560M400 0V560M500 0V560M600 0V560M700 0V560M800 0V560"/></g>
+<path d="M40 282 C58 224 78 342 96 282 S134 224 152 282 S190 340 208 282 S246 232 264 282 S302 330 320 282" fill="none" stroke="url(#sig)" stroke-width="6"/>
+<g font-family="system-ui,sans-serif" text-anchor="middle">
+  <rect x="330" y="188" width="150" height="188" rx="20" fill="#142a42" stroke="#72f0d3" stroke-opacity=".55"/><text x="405" y="220" fill="#72f0d3" font-size="18" font-weight="700">STAGE 1</text><text x="405" y="250" fill="#eef6ff" font-size="17">Dynamic EQ</text><path d="M350 324 C375 300 392 342 412 316 S450 286 462 315" fill="none" stroke="#72f0d3" stroke-width="4"/><rect x="354" y="276" width="102" height="12" rx="6" fill="#72f0d3" opacity=".28"/>
+  <rect x="505" y="142" width="150" height="280" rx="20" fill="#142a42" stroke="#6bc0ff" stroke-opacity=".55"/><text x="580" y="176" fill="#6bc0ff" font-size="18" font-weight="700">STAGE 2</text><text x="580" y="206" fill="#eef6ff" font-size="17">Spectral denoise</text><g fill="#6bc0ff" opacity=".42"><rect x="530" y="240" width="12" height="110" rx="6"/><rect x="551" y="260" width="12" height="76" rx="6"/><rect x="572" y="224" width="12" height="132" rx="6"/><rect x="593" y="250" width="12" height="92" rx="6"/><rect x="614" y="232" width="12" height="120" rx="6"/></g>
+  <rect x="680" y="188" width="150" height="188" rx="20" fill="#142a42" stroke="#ffd36b" stroke-opacity=".55"/><text x="755" y="220" fill="#ffd36b" font-size="18" font-weight="700">STAGE 3</text><text x="755" y="250" fill="#eef6ff" font-size="17">Multiband</text><rect x="704" y="278" width="100" height="18" rx="9" fill="#ffd36b" opacity=".26"/><rect x="704" y="308" width="70" height="18" rx="9" fill="#ffd36b" opacity=".48"/><rect x="704" y="338" width="42" height="18" rx="9" fill="#ffd36b" opacity=".72"/>
+</g>
+<g stroke="#a9bdd2" stroke-width="4" fill="none"><path d="M320 282H330"/><path d="M480 282H505"/><path d="M655 282H680"/><path d="M830 282H866"/></g>
+<circle cx="493" cy="282" r="9" fill="#eef6ff"/><circle cx="667" cy="282" r="9" fill="#eef6ff"/>
+<g font-family="system-ui,sans-serif"><text x="40" y="445" fill="#eef6ff" font-size="21" font-weight="700">The hidden problem:</text><text x="40" y="476" fill="#a9bdd2" font-size="18">each detector sees audio already changed by the previous stage.</text><text x="40" y="510" fill="#a9bdd2" font-size="18">Overlap + different time constants = chain-level artifacts.</text></g>
+</svg>
