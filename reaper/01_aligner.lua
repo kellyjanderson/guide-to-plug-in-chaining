@@ -6,24 +6,10 @@
 --   3. Each selected track contains the same ordered sequence of audio items.
 --   4. Run this script.
 --
--- Pairing is by chronological item index:
---   reference item 1 <-> target item 1
---   reference item 2 <-> target item 2
---   ...
---
--- This version deliberately uses TRACK AudioAccessors in PROJECT TIME.
--- That is the correct model for a many-item track and also analyzes pre-track-FX audio,
--- which is useful when the tracks differ only because of processing.
---
--- Correction hierarchy per pair:
---   1. Coarse whole-item alignment by differentiated envelope correlation.
---   2. Local sample-lag measurements after coarse alignment.
---   3. Constant residual lag -> whole-item shift.
---   4. Insertable sample-slip drift -> split/reposition, leaving exact timeline silence.
---   5. Otherwise -> stretch-marker correction.
---
--- This corrects timing/sample correspondence. It cannot undo arbitrary
--- frequency-dependent phase rotation introduced by processing.
+-- Pairing is by chronological item index. Processing is incremental so the UI
+-- remains responsive. A progress window shows the current pair and a Cancel button.
+-- Cancelling stops between clip pairs and leaves completed work intact; one Undo
+-- restores the entire partial run.
 
 local ANALYSIS_SECONDS = 8.0
 local COARSE_MAX_LAG_SECONDS = 0.50
@@ -35,6 +21,9 @@ local MIN_CORR = 0.12
 local CONSTANT_MAD_SAMPLES = 0.75
 local STEP_THRESHOLD_SAMPLES = 1.25
 local MAX_STEP_SAMPLES = 64
+
+local UI_W, UI_H = 560, 185
+local BTN_X, BTN_Y, BTN_W, BTN_H = 430, 130, 100, 34
 
 local function project_sr()
   local sr = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
@@ -117,7 +106,6 @@ local function read_track_mono(track,start_time,ns,sr)
     return nil,"invalid accessor bounds"
   end
 
-  -- Keep the request strictly inside the available track-audio range.
   if start_time < a then start_time = a end
   local available = math.floor((b-start_time)*sr) - 1
   ns = math.min(ns,available)
@@ -126,7 +114,6 @@ local function read_track_mono(track,start_time,ns,sr)
     return nil,string.format("request outside track audio bounds (%.6f..%.6f)",a,b)
   end
 
-  -- Two channels is safe for mono/stereo sources; REAPER fills requested track channels.
   local ch = 2
   local buf = reaper.new_array(ns*ch)
   local rv = reaper.GetAudioAccessorSamples(aa,sr,ch,start_time,ns,buf)
@@ -341,12 +328,7 @@ local function align_pair(refTrack,tgtTrack,refItem,tgtItem,sr)
   if not tgtEnv then return false,"could not read target audio: "..tostring(tgtWhy) end
 
   local lagSec,score=coarse_lag(refEnv,tgtEnv)
-  local refPos=reaper.GetMediaItemInfo_Value(refItem,"D_POSITION")
   local tgtPos=reaper.GetMediaItemInfo_Value(tgtItem,"D_POSITION")
-
-  -- Envelopes are measured from each item's own start. Preserve the item's existing
-  -- approximate placement, correcting only the measured content lag.
-  local expectedDelta=tgtPos-refPos
   reaper.SetMediaItemInfo_Value(tgtItem,"D_POSITION",tgtPos-lagSec)
 
   local pts=local_points(refTrack,tgtTrack,refItem,tgtItem,sr)
@@ -374,22 +356,22 @@ local function align_pair(refTrack,tgtTrack,refItem,tgtItem,sr)
   return true,string.format("coarse %+0.3f ms; fine correction skipped (%s)",lagSec*1000,why or "unknown")
 end
 
+-- -----------------------------------------------------------------------------
+-- Job setup
+-- -----------------------------------------------------------------------------
 local tracks=selected_tracks()
 if #tracks<2 then
   reaper.MB("Select at least two tracks. The topmost selected track is the reference.","Pairwise Multi-Track Aligner",0)
   return
 end
 
--- Snapshot every track's ordered audio-item list before making any edits.
 local lists={}
 local expected
 for i,tr in ipairs(tracks) do
   lists[i]=audio_items_on_track(tr)
   expected=expected or #lists[i]
   if #lists[i]~=expected then
-    reaper.MB(string.format(
-      "Track item counts do not match.\n\nReference: %d audio items\n%s: %d audio items",
-      expected,track_name(tr),#lists[i]),"Pairwise Multi-Track Aligner",0)
+    reaper.MB(string.format("Track item counts do not match.\n\nReference: %d audio items\n%s: %d audio items",expected,track_name(tr),#lists[i]),"Pairwise Multi-Track Aligner",0)
     return
   end
 end
@@ -400,40 +382,136 @@ if expected==0 then
 end
 
 local sr=project_sr()
+local totalPairs=(#tracks-1)*expected
+local donePairs=0
+local okPairs=0
+local failures=0
+local targetIndex=2
+local clipIndex=1
+local cancelled=false
+local finished=false
+local lastMouseDown=false
+local status="Starting..."
 local report={
   "Pairwise Multi-Track Aligner",
-  string.format("Reference: %s | %d clips | %.0f Hz",track_name(tracks[1]),expected,sr)
+  string.format("Reference: %s | %d clips | %d target track(s) | %.0f Hz",track_name(tracks[1]),expected,#tracks-1,sr)
 }
-local failures=0
 
 reaper.Undo_BeginBlock()
-reaper.PreventUIRefresh(1)
 clear_track_offsets(tracks)
 
-for ti=2,#tracks do
-  local targetName=track_name(tracks[ti])
-  local okCount=0
-  local bad={}
-  for idx=1,expected do
-    local ok,detail=align_pair(tracks[1],tracks[ti],lists[1][idx],lists[ti][idx],sr)
-    if ok then
-      okCount=okCount+1
-    else
-      failures=failures+1
-      bad[#bad+1]=string.format("clip %d: %s",idx,detail or "unknown error")
-    end
+gfx.init("Pairwise Multi-Track Aligner",UI_W,UI_H,0)
+gfx.setfont(1,"Arial",16)
+
+local function inside(x,y,w,h)
+  return gfx.mouse_x>=x and gfx.mouse_x<=x+w and gfx.mouse_y>=y and gfx.mouse_y<=y+h
+end
+
+local function draw_ui()
+  gfx.set(0.12,0.12,0.14,1); gfx.rect(0,0,UI_W,UI_H,1)
+
+  gfx.set(0.95,0.95,0.97,1)
+  gfx.x=20; gfx.y=15; gfx.drawstr("Pairwise Multi-Track Aligner")
+
+  gfx.setfont(1,"Arial",13)
+  gfx.set(0.78,0.80,0.84,1)
+  gfx.x=20; gfx.y=45; gfx.drawstr(status)
+
+  local frac = totalPairs>0 and donePairs/totalPairs or 0
+  gfx.set(0.24,0.25,0.28,1); gfx.rect(20,78,510,24,1)
+  gfx.set(0.20,0.55,0.95,1); gfx.rect(20,78,510*frac,24,1)
+  gfx.set(1,1,1,1); gfx.x=245; gfx.y=82; gfx.drawstr(string.format("%.1f%%",frac*100))
+
+  gfx.set(0.75,0.77,0.81,1)
+  gfx.x=20; gfx.y=116
+  gfx.drawstr(string.format("Processed %d / %d    Successful %d    Failed %d",donePairs,totalPairs,okPairs,failures))
+
+  local hover=inside(BTN_X,BTN_Y,BTN_W,BTN_H)
+  if hover then gfx.set(0.82,0.25,0.25,1) else gfx.set(0.62,0.18,0.18,1) end
+  gfx.rect(BTN_X,BTN_Y,BTN_W,BTN_H,1)
+  gfx.set(1,1,1,1); gfx.x=BTN_X+29; gfx.y=BTN_Y+8; gfx.drawstr("Cancel")
+
+  gfx.update()
+end
+
+local function close_job(wasCancelled)
+  if finished then return end
+  finished=true
+  cancelled=wasCancelled or false
+
+  if gfx.quit then gfx.quit() end
+  reaper.UpdateArrange()
+  local label = cancelled and "Pairwise align selected tracks (cancelled)" or "Pairwise align selected tracks"
+  reaper.Undo_EndBlock(label,-1)
+
+  report[#report+1]=string.format("Processed %d/%d pairs; %d successful; %d failed%s",donePairs,totalPairs,okPairs,failures,cancelled and "; CANCELLED" or "")
+  reaper.ShowConsoleMsg(table.concat(report,"\n").."\n")
+
+  if cancelled then
+    reaper.MB(string.format("Alignment cancelled after %d of %d clip pairs.\n\nCompleted edits were left in place. Use Undo to revert the whole run.",donePairs,totalPairs),"Pairwise Multi-Track Aligner",0)
+  elseif failures>0 then
+    reaper.MB(string.format("Alignment finished with %d clip-pair failure(s). See the REAPER console for details.",failures),"Pairwise Multi-Track Aligner",0)
   end
-  report[#report+1]=string.format("%s: %d/%d clip pairs processed",targetName,okCount,expected)
-  for _,line in ipairs(bad) do report[#report+1]="  "..line end
 end
 
-reaper.PreventUIRefresh(-1)
-reaper.UpdateArrange()
-reaper.Undo_EndBlock("Pairwise align selected tracks",-1)
-reaper.ShowConsoleMsg(table.concat(report,"\n").."\n")
-
-if failures>0 then
-  reaper.MB(string.format(
-    "Alignment finished with %d clip-pair read/alignment failure(s). See the REAPER console for details.",
-    failures),"Pairwise Multi-Track Aligner",0)
+local function next_pair_indices()
+  clipIndex=clipIndex+1
+  if clipIndex>expected then
+    clipIndex=1
+    targetIndex=targetIndex+1
+  end
 end
+
+local function process_one_pair()
+  if targetIndex>#tracks then
+    close_job(false)
+    return
+  end
+
+  local targetName=track_name(tracks[targetIndex])
+  status=string.format("%s — clip %d of %d",targetName,clipIndex,expected)
+  draw_ui()
+
+  local ok,detail=align_pair(tracks[1],tracks[targetIndex],lists[1][clipIndex],lists[targetIndex][clipIndex],sr)
+  donePairs=donePairs+1
+  if ok then
+    okPairs=okPairs+1
+  else
+    failures=failures+1
+    report[#report+1]=string.format("%s clip %d: %s",targetName,clipIndex,detail or "unknown error")
+  end
+
+  if donePairs%5==0 then reaper.UpdateArrange() end
+  next_pair_indices()
+end
+
+local function loop()
+  if finished then return end
+
+  local ch=gfx.getchar()
+  if ch<0 then
+    close_job(true)
+    return
+  end
+
+  local mouseDown=(gfx.mouse_cap & 1)==1
+  if mouseDown and not lastMouseDown and inside(BTN_X,BTN_Y,BTN_W,BTN_H) then
+    close_job(true)
+    return
+  end
+  lastMouseDown=mouseDown
+
+  process_one_pair()
+  if not finished then
+    draw_ui()
+    reaper.defer(loop)
+  end
+end
+
+-- Ensure an interrupted script still closes the Undo block.
+reaper.atexit(function()
+  if not finished then close_job(true) end
+end)
+
+draw_ui()
+reaper.defer(loop)
