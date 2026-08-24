@@ -6,10 +6,28 @@
 --   3. Each selected track contains the same ordered sequence of audio items.
 --   4. Run this script.
 --
--- Pairing is by chronological item index. Processing is incremental so the UI
--- remains responsive. A progress window shows the current pair and a Cancel button.
--- Cancelling stops between clip pairs and leaves completed work intact; one Undo
--- restores the entire partial run.
+-- Pairing is by chronological item index:
+--   reference item 1 <-> target item 1
+--   reference item 2 <-> target item 2
+--   ...
+--
+-- Progress/cancel:
+--   * One clip pair is processed per reaper.defer() cycle.
+--   * A progress window shows current track/clip and success/failure counts.
+--   * Click Cancel, press Escape, or close the window to stop between clip pairs.
+--   * A cancelled partial run is still one Undo operation.
+--
+-- This version uses TRACK AudioAccessors in PROJECT TIME.
+--
+-- Correction hierarchy per pair:
+--   1. Coarse whole-item alignment by differentiated envelope correlation.
+--   2. Local sample-lag measurements after coarse alignment.
+--   3. Constant residual lag -> whole-item shift.
+--   4. Insertable sample-slip drift -> split/reposition, leaving exact timeline silence.
+--   5. Otherwise -> stretch-marker correction.
+--
+-- This corrects timing/sample correspondence. It cannot undo arbitrary
+-- frequency-dependent phase rotation introduced by processing.
 
 local ANALYSIS_SECONDS = 8.0
 local COARSE_MAX_LAG_SECONDS = 0.50
@@ -22,8 +40,8 @@ local CONSTANT_MAD_SAMPLES = 0.75
 local STEP_THRESHOLD_SAMPLES = 1.25
 local MAX_STEP_SAMPLES = 64
 
-local UI_W, UI_H = 560, 185
-local BTN_X, BTN_Y, BTN_W, BTN_H = 430, 130, 100, 34
+local UI_W, UI_H = 560, 190
+local BTN_X, BTN_Y, BTN_W, BTN_H = 420, 138, 110, 32
 
 local function project_sr()
   local sr = reaper.GetSetProjectInfo(0, "PROJECT_SRATE", 0, false)
@@ -356,9 +374,8 @@ local function align_pair(refTrack,tgtTrack,refItem,tgtItem,sr)
   return true,string.format("coarse %+0.3f ms; fine correction skipped (%s)",lagSec*1000,why or "unknown")
 end
 
--- -----------------------------------------------------------------------------
--- Job setup
--- -----------------------------------------------------------------------------
+-- ---------- setup ----------
+
 local tracks=selected_tracks()
 if #tracks<2 then
   reaper.MB("Select at least two tracks. The topmost selected track is the reference.","Pairwise Multi-Track Aligner",0)
@@ -371,7 +388,9 @@ for i,tr in ipairs(tracks) do
   lists[i]=audio_items_on_track(tr)
   expected=expected or #lists[i]
   if #lists[i]~=expected then
-    reaper.MB(string.format("Track item counts do not match.\n\nReference: %d audio items\n%s: %d audio items",expected,track_name(tr),#lists[i]),"Pairwise Multi-Track Aligner",0)
+    reaper.MB(string.format(
+      "Track item counts do not match.\n\nReference: %d audio items\n%s: %d audio items",
+      expected,track_name(tr),#lists[i]),"Pairwise Multi-Track Aligner",0)
     return
   end
 end
@@ -383,135 +402,112 @@ end
 
 local sr=project_sr()
 local totalPairs=(#tracks-1)*expected
-local donePairs=0
-local okPairs=0
-local failures=0
-local targetIndex=2
-local clipIndex=1
+local processed, successes, failures = 0,0,0
+local targetIndex, clipIndex = 2,1
 local cancelled=false
 local finished=false
-local lastMouseDown=false
-local status="Starting..."
-local report={
-  "Pairwise Multi-Track Aligner",
-  string.format("Reference: %s | %d clips | %d target track(s) | %.0f Hz",track_name(tracks[1]),expected,#tracks-1,sr)
-}
+local lastDetail="Ready"
+local bad={}
+local mouseWasDown=false
 
-reaper.Undo_BeginBlock()
+reaper.Undo_BeginBlock2(0)
 clear_track_offsets(tracks)
 
 gfx.init("Pairwise Multi-Track Aligner",UI_W,UI_H,0)
-gfx.setfont(1,"Arial",16)
-
-local function inside(x,y,w,h)
-  return gfx.mouse_x>=x and gfx.mouse_x<=x+w and gfx.mouse_y>=y and gfx.mouse_y<=y+h
-end
+gfx.setfont(1,"Arial",15)
 
 local function draw_ui()
-  gfx.set(0.12,0.12,0.14,1); gfx.rect(0,0,UI_W,UI_H,1)
+  gfx.set(0.10,0.10,0.10,1); gfx.rect(0,0,UI_W,UI_H,1)
+  gfx.set(0.92,0.92,0.92,1)
+  gfx.x,gfx.y=20,16
+  gfx.drawstr("Pairwise Multi-Track Aligner")
 
-  gfx.set(0.95,0.95,0.97,1)
-  gfx.x=20; gfx.y=15; gfx.drawstr("Pairwise Multi-Track Aligner")
-
+  local pct = totalPairs>0 and processed/totalPairs or 0
+  local currentTrack = (targetIndex<=#tracks) and track_name(tracks[targetIndex]) or "Done"
   gfx.setfont(1,"Arial",13)
-  gfx.set(0.78,0.80,0.84,1)
-  gfx.x=20; gfx.y=45; gfx.drawstr(status)
+  gfx.x,gfx.y=20,45
+  gfx.drawstr(string.format("Track: %s",currentTrack))
+  gfx.x,gfx.y=20,66
+  gfx.drawstr(string.format("Clip: %d / %d    Overall: %d / %d (%.1f%%)",math.min(clipIndex,expected),expected,processed,totalPairs,pct*100))
+  gfx.x,gfx.y=20,87
+  gfx.drawstr(string.format("Successful: %d    Failed: %d",successes,failures))
+  gfx.x,gfx.y=20,108
+  gfx.drawstr("Last: "..tostring(lastDetail):sub(1,72))
 
-  local frac = totalPairs>0 and donePairs/totalPairs or 0
-  gfx.set(0.24,0.25,0.28,1); gfx.rect(20,78,510,24,1)
-  gfx.set(0.20,0.55,0.95,1); gfx.rect(20,78,510*frac,24,1)
-  gfx.set(1,1,1,1); gfx.x=245; gfx.y=82; gfx.drawstr(string.format("%.1f%%",frac*100))
+  -- progress bar
+  gfx.set(0.22,0.22,0.22,1); gfx.rect(20,140,370,22,1)
+  gfx.set(0.20,0.68,0.95,1); gfx.rect(20,140,370*pct,22,1)
+  gfx.set(0.85,0.85,0.85,1); gfx.rect(20,140,370,22,0)
 
-  gfx.set(0.75,0.77,0.81,1)
-  gfx.x=20; gfx.y=116
-  gfx.drawstr(string.format("Processed %d / %d    Successful %d    Failed %d",donePairs,totalPairs,okPairs,failures))
-
-  local hover=inside(BTN_X,BTN_Y,BTN_W,BTN_H)
-  if hover then gfx.set(0.82,0.25,0.25,1) else gfx.set(0.62,0.18,0.18,1) end
-  gfx.rect(BTN_X,BTN_Y,BTN_W,BTN_H,1)
-  gfx.set(1,1,1,1); gfx.x=BTN_X+29; gfx.y=BTN_Y+8; gfx.drawstr("Cancel")
-
+  -- cancel button
+  gfx.set(0.55,0.18,0.18,1); gfx.rect(BTN_X,BTN_Y,BTN_W,BTN_H,1)
+  gfx.set(1,1,1,1); gfx.x,gfx.y=BTN_X+31,BTN_Y+8; gfx.drawstr("Cancel")
   gfx.update()
 end
 
-local function close_job(wasCancelled)
+local function cleanup_and_finish(wasCancelled)
   if finished then return end
   finished=true
-  cancelled=wasCancelled or false
-
-  if gfx.quit then gfx.quit() end
   reaper.UpdateArrange()
-  local label = cancelled and "Pairwise align selected tracks (cancelled)" or "Pairwise align selected tracks"
-  reaper.Undo_EndBlock(label,-1)
+  reaper.Undo_EndBlock2(0,wasCancelled and "Pairwise align selected tracks (cancelled/partial)" or "Pairwise align selected tracks",-1)
+  if gfx.quit then gfx.quit() end
 
-  report[#report+1]=string.format("Processed %d/%d pairs; %d successful; %d failed%s",donePairs,totalPairs,okPairs,failures,cancelled and "; CANCELLED" or "")
+  local report={
+    "Pairwise Multi-Track Aligner",
+    string.format("Reference: %s | %d clips | %.0f Hz",track_name(tracks[1]),expected,sr),
+    string.format("Processed %d/%d pairs | Success %d | Failed %d%s",processed,totalPairs,successes,failures,wasCancelled and " | CANCELLED" or "")
+  }
+  for _,line in ipairs(bad) do report[#report+1]=line end
   reaper.ShowConsoleMsg(table.concat(report,"\n").."\n")
-
-  if cancelled then
-    reaper.MB(string.format("Alignment cancelled after %d of %d clip pairs.\n\nCompleted edits were left in place. Use Undo to revert the whole run.",donePairs,totalPairs),"Pairwise Multi-Track Aligner",0)
-  elseif failures>0 then
-    reaper.MB(string.format("Alignment finished with %d clip-pair failure(s). See the REAPER console for details.",failures),"Pairwise Multi-Track Aligner",0)
-  end
 end
 
-local function next_pair_indices()
+local function cancel_requested()
+  local ch=gfx.getchar()
+  if ch<0 or ch==27 then return true end
+  local down=(gfx.mouse_cap & 1)==1
+  local clicked=down and not mouseWasDown and gfx.mouse_x>=BTN_X and gfx.mouse_x<=BTN_X+BTN_W and gfx.mouse_y>=BTN_Y and gfx.mouse_y<=BTN_Y+BTN_H
+  mouseWasDown=down
+  return clicked
+end
+
+local function process_next()
+  if finished then return end
+  draw_ui()
+
+  if cancel_requested() then
+    cancelled=true
+    lastDetail="Cancelled by user"
+    draw_ui()
+    cleanup_and_finish(true)
+    return
+  end
+
+  if targetIndex>#tracks then
+    lastDetail="Complete"
+    draw_ui()
+    cleanup_and_finish(false)
+    return
+  end
+
+  local tgtTrack=tracks[targetIndex]
+  local ok,detail=align_pair(tracks[1],tgtTrack,lists[1][clipIndex],lists[targetIndex][clipIndex],sr)
+  processed=processed+1
+  lastDetail=string.format("%s clip %d: %s",track_name(tgtTrack),clipIndex,detail or "")
+  if ok then
+    successes=successes+1
+  else
+    failures=failures+1
+    bad[#bad+1]=lastDetail
+  end
+
   clipIndex=clipIndex+1
   if clipIndex>expected then
     clipIndex=1
     targetIndex=targetIndex+1
   end
-end
 
-local function process_one_pair()
-  if targetIndex>#tracks then
-    close_job(false)
-    return
-  end
-
-  local targetName=track_name(tracks[targetIndex])
-  status=string.format("%s — clip %d of %d",targetName,clipIndex,expected)
   draw_ui()
-
-  local ok,detail=align_pair(tracks[1],tracks[targetIndex],lists[1][clipIndex],lists[targetIndex][clipIndex],sr)
-  donePairs=donePairs+1
-  if ok then
-    okPairs=okPairs+1
-  else
-    failures=failures+1
-    report[#report+1]=string.format("%s clip %d: %s",targetName,clipIndex,detail or "unknown error")
-  end
-
-  if donePairs%5==0 then reaper.UpdateArrange() end
-  next_pair_indices()
+  reaper.defer(process_next)
 end
 
-local function loop()
-  if finished then return end
-
-  local ch=gfx.getchar()
-  if ch<0 then
-    close_job(true)
-    return
-  end
-
-  local mouseDown=(gfx.mouse_cap & 1)==1
-  if mouseDown and not lastMouseDown and inside(BTN_X,BTN_Y,BTN_W,BTN_H) then
-    close_job(true)
-    return
-  end
-  lastMouseDown=mouseDown
-
-  process_one_pair()
-  if not finished then
-    draw_ui()
-    reaper.defer(loop)
-  end
-end
-
--- Ensure an interrupted script still closes the Undo block.
-reaper.atexit(function()
-  if not finished then close_job(true) end
-end)
-
-draw_ui()
-reaper.defer(loop)
+reaper.defer(process_next)
